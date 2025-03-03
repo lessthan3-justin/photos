@@ -20,6 +20,11 @@ struct ContentView: View {
     // A unique identifier to tag the current fetch.
     @State private var currentFetchId: UUID? = nil
     
+    // States for pinch to zoom and panning
+    @State private var zoomScale: CGFloat = 1.0
+    @State private var lastZoomScale: CGFloat = 1.0
+    @State private var panOffset: CGSize = .zero
+    
     let expansionDuration: TimeInterval = 0.2
 
     var body: some View {
@@ -31,8 +36,46 @@ struct ContentView: View {
                     Image(uiImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .frame(width: photoSize, height: min(photoSize * (image.size.height / image.size.width), geometry.size.height))
+                        // Adjust height to preserve aspect ratio (capped by screen height)
+                        .frame(width: photoSize,
+                               height: min(photoSize * (image.size.height / image.size.width),
+                                          geometry.size.height))
                         .position(photoPosition)
+                        // Apply zoom scale and pan offset
+                        .scaleEffect(zoomScale)
+                        .offset(panOffset)
+                        // Combined pinch-to-zoom gesture
+                        .gesture(
+                            MagnificationGesture()
+                                .onChanged { value in
+                                    // Update zoom scale continuously
+                                    zoomScale = lastZoomScale * value
+                                }
+                                .onEnded { _ in
+                                    if zoomScale < 1.0 {
+                                        withAnimation(.easeOut) {
+                                            zoomScale = 1.0
+                                        }
+                                        lastZoomScale = 1.0
+                                    } else {
+                                        lastZoomScale = zoomScale
+                                    }
+                                }
+                        )
+                        // Combined drag gesture for moving the image around.
+                        .simultaneousGesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    panOffset = value.translation
+                                }
+                                .onEnded { value in
+                                    // Update the image position based on the pan offset.
+                                    photoPosition = CGPoint(x: photoPosition.x + panOffset.width,
+                                                            y: photoPosition.y + panOffset.height)
+                                    panOffset = .zero
+                                }
+                        )
+                        // Tap to close the photo.
                         .onTapGesture {
                             performHapticFeedback()
                             closePhoto()
@@ -101,6 +144,11 @@ struct ContentView: View {
         originalPhotoPosition = photoPosition
         originalPhotoSize = smallSize
         
+        // Reset zoom and pan states
+        zoomScale = 1.0
+        lastZoomScale = 1.0
+        panOffset = .zero
+        
         // Generate a new fetch ID
         let fetchId = UUID()
         currentFetchId = fetchId
@@ -151,14 +199,14 @@ struct ContentView: View {
     func expandPhoto(in size: CGSize) {
         performHapticFeedback()
         isExpanding = true
-        let fullScreenWidth = size.width // Set to screen width instead of max dimension
-       
+        let fullScreenWidth = size.width // Use screen width
+        
         withAnimation(.easeInOut(duration: expansionDuration)) {
             photoSize = fullScreenWidth
             photoPosition = CGPoint(x: size.width / 2, y: size.height / 2)
             isExpanding = false // Reset immediately
-            isFullScreen = true // Set full screen immediately
-            peekCount += 1      // Increment immediately
+            isFullScreen = true  // Set fullscreen immediately
+            peekCount += 1       // Increment peek count
         }
     }
     
