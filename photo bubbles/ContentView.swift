@@ -20,10 +20,13 @@ struct ContentView: View {
     // A unique identifier to tag the current fetch.
     @State private var currentFetchId: UUID? = nil
     
-    // States for pinch to zoom and panning
+    // States for pinch-to-zoom and panning
     @State private var zoomScale: CGFloat = 1.0
     @State private var lastZoomScale: CGFloat = 1.0
+    // The current offset during a drag gesture
     @State private var panOffset: CGSize = .zero
+    // The cumulative offset from previous drags (used as a baseline)
+    @State private var cumulativePanOffset: CGSize = .zero
     
     let expansionDuration: TimeInterval = 0.2
 
@@ -41,20 +44,21 @@ struct ContentView: View {
                                height: min(photoSize * (image.size.height / image.size.width),
                                           geometry.size.height))
                         .position(photoPosition)
-                        // Apply zoom scale and pan offset
                         .scaleEffect(zoomScale)
+                        // Use the computed pan offset from our new state variables.
                         .offset(panOffset)
-                        // Combined pinch-to-zoom gesture
+                        // Pinch-to-zoom gesture
                         .gesture(
                             MagnificationGesture()
                                 .onChanged { value in
-                                    // Update zoom scale continuously
                                     zoomScale = lastZoomScale * value
                                 }
                                 .onEnded { _ in
                                     if zoomScale < 1.0 {
                                         withAnimation(.easeOut) {
                                             zoomScale = 1.0
+                                            panOffset = .zero // Reset pan when zooming out
+                                            cumulativePanOffset = .zero
                                         }
                                         lastZoomScale = 1.0
                                     } else {
@@ -62,23 +66,34 @@ struct ContentView: View {
                                     }
                                 }
                         )
-                        // Combined drag gesture for moving the image around.
+                        // Drag gesture for panning.
                         .simultaneousGesture(
                             DragGesture()
                                 .onChanged { value in
-                                    panOffset = value.translation
+                                    let newOffset = CGSize(
+                                        width: cumulativePanOffset.width + value.translation.width,
+                                        height: cumulativePanOffset.height + value.translation.height
+                                    )
+                                    panOffset = boundedOffset(newOffset, image: image, geometry: geometry)
                                 }
-                                .onEnded { value in
-                                    // Update the image position based on the pan offset.
-                                    photoPosition = CGPoint(x: photoPosition.x + panOffset.width,
-                                                            y: photoPosition.y + panOffset.height)
-                                    panOffset = .zero
+                                .onEnded { _ in
+                                    // Update the cumulative offset once the gesture ends.
+                                    cumulativePanOffset = panOffset
                                 }
                         )
-                        // Tap to close the photo.
+                        // Tap gesture: if not zoomed in, close; otherwise, reset zoom and pan.
                         .onTapGesture {
                             performHapticFeedback()
-                            closePhoto()
+                            if zoomScale == 1.0 {
+                                closePhoto()
+                            } else {
+                                withAnimation(.easeInOut(duration: expansionDuration)) {
+                                    zoomScale = 1.0
+                                    panOffset = .zero
+                                    cumulativePanOffset = .zero
+                                }
+                                lastZoomScale = 1.0
+                            }
                         }
                 }
             }
@@ -117,6 +132,22 @@ struct ContentView: View {
         .onAppear(perform: requestPhotoAccess)
     }
     
+    // Bounded offset keeps the image within reasonable limits.
+    func boundedOffset(_ offset: CGSize, image: UIImage, geometry: GeometryProxy) -> CGSize {
+        let imageWidth = photoSize * zoomScale
+        let imageHeight = min(photoSize * (image.size.height / image.size.width), geometry.size.height) * zoomScale
+        let screenWidth = geometry.size.width
+        let screenHeight = geometry.size.height
+        
+        let maxX = max(0, (imageWidth - screenWidth) / 2)
+        let maxY = max(0, (imageHeight - screenHeight) / 2)
+        
+        let boundedX = min(max(offset.width, -maxX), maxX)
+        let boundedY = min(max(offset.height, -maxY), maxY)
+        
+        return CGSize(width: boundedX, height: boundedY)
+    }
+    
     // Request access to the photo library and fetch assets.
     func requestPhotoAccess() {
         PHPhotoLibrary.requestAuthorization { status in
@@ -148,6 +179,7 @@ struct ContentView: View {
         zoomScale = 1.0
         lastZoomScale = 1.0
         panOffset = .zero
+        cumulativePanOffset = .zero
         
         // Generate a new fetch ID
         let fetchId = UUID()
@@ -165,7 +197,7 @@ struct ContentView: View {
                         self.showPhoto = true
                         withAnimation(.easeInOut(duration: expansionDuration)) {
                             self.photoSize = smallSize
-                            self.expandPhoto(in: size) // Trigger expansion immediately
+                            self.expandPhoto(in: size)
                         }
                     }
                 }
@@ -173,7 +205,6 @@ struct ContentView: View {
         }
     }
     
-    // Fetch a full-quality image for a given asset.
     func fetchImage(for asset: PHAsset, completion: @escaping (UIImage?) -> Void) {
         let imageManager = PHImageManager.default()
         let targetSize = CGSize(width: 600, height: 900)
@@ -199,14 +230,14 @@ struct ContentView: View {
     func expandPhoto(in size: CGSize) {
         performHapticFeedback()
         isExpanding = true
-        let fullScreenWidth = size.width // Use screen width
+        let fullScreenWidth = size.width
         
         withAnimation(.easeInOut(duration: expansionDuration)) {
             photoSize = fullScreenWidth
             photoPosition = CGPoint(x: size.width / 2, y: size.height / 2)
-            isExpanding = false // Reset immediately
-            isFullScreen = true  // Set fullscreen immediately
-            peekCount += 1       // Increment peek count
+            isExpanding = false
+            isFullScreen = true
+            peekCount += 1
         }
     }
     
@@ -242,23 +273,19 @@ struct ContentView: View {
     
     func formatNumber(_ number: Int) -> String {
         switch number {
-        case 0..<100:
-            return "\(number)"
-        case 100..<1000:
-            return "\(number)"
+        case 0..<100: return "\(number)"
+        case 100..<1000: return "\(number)"
         case 1000..<10000:
             let thousands = Double(number) / 1000.0
             return thousands.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(thousands))k" : String(format: "%.1fk", thousands)
         case 10000..<100000:
             let thousands = Double(number) / 1000.0
             return thousands.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(thousands))k" : String(format: "%.1fk", thousands)
-        case 100000..<1000000:
-            return "\(number / 1000)k"
+        case 100000..<1000000: return "\(number / 1000)k"
         case 1000000...:
             let millions = Double(number) / 1000000.0
             return millions.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(millions))M" : String(format: "%.1fM", millions)
-        default:
-            return "\(number)"
+        default: return "\(number)"
         }
     }
 }
@@ -298,3 +325,4 @@ func performHapticFeedback(style: UIImpactFeedbackGenerator.FeedbackStyle = .med
     let generator = UIImpactFeedbackGenerator(style: style)
     generator.impactOccurred()
 }
+
