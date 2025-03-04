@@ -2,6 +2,7 @@ import SwiftUI
 import Photos
 
 struct ContentView: View {
+    @StateObject private var photoPreloader = PhotoPreloader()
     @AppStorage("peekCount") private var peekCount: Int = 0
     
     @State private var showPhoto = false
@@ -153,9 +154,11 @@ struct ContentView: View {
         PHPhotoLibrary.requestAuthorization { status in
             if status == .authorized || status == .limited {
                 let fetchOptions = PHFetchOptions()
+                fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
                 let assets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
                 DispatchQueue.main.async {
                     self.photoAssets = assets
+                    self.photoPreloader.setAssets(assets)
                 }
             }
         }
@@ -184,9 +187,18 @@ struct ContentView: View {
         // Generate a new fetch ID
         let fetchId = UUID()
         currentFetchId = fetchId
-        
-        // Pick a random asset if available
-        if let assets = photoAssets, assets.count > 0 {
+
+        // get a preloaded photo if available
+        if let (photoId, preloadedImage) = photoPreloader.getNextPhoto() {
+            self.currentPhoto = preloadedImage
+            self.showPhoto = true
+            withAnimation(.easeInOut(duration: expansionDuration)) {
+                self.photoSize = smallSize
+                self.expandPhoto(in: size)
+            }
+        }
+        // fall back to direct fetching if needed
+        else if let assets = photoAssets, assets.count > 0 {
             let randomIndex = Int.random(in: 0..<assets.count)
             let asset = assets.object(at: randomIndex)
             
